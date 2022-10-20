@@ -20,7 +20,11 @@ package gorqlite
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -251,4 +255,152 @@ func (conn *Connection) updateClusterInfo() error {
 	conn.cluster = rc
 
 	return nil
+}
+
+func (conn *Connection) updateClusterInfo2() error {
+	trace("%s: updateClusterInfo2() called", conn.ID)
+
+	// start with a fresh new cluster
+	var rc rqliteCluster
+	rc.conn = conn
+
+	responseBody, err := conn.rqliteApiGet(api_STATUS)
+	if err != nil {
+		return err
+	}
+	trace("%s: updateClusterInfo() back from api call OK", conn.ID)
+
+	sections := make(map[string]interface{})
+	err = json.Unmarshal(responseBody, &sections)
+	if err != nil {
+		return err
+	}
+	sMap := sections["store"].(map[string]interface{})
+	leaderMap, ok := sMap["leader"].(map[string]interface{})
+	var leaderRaftAddr string
+	if ok {
+		leaderRaftAddr = leaderMap["node_id"].(string)
+	} else {
+		leaderRaftAddr = sMap["leader"].(string)
+	}
+	trace("%s: leader from store section is %s", conn.ID, leaderRaftAddr)
+
+	// In 5.x and earlier, "metadata" is available
+	// leader in this case is the RAFT address
+	// we want the HTTP address, so we'll use this as
+	// a key as we sift through APIPeers
+	apiPeers, ok := sMap["metadata"].(map[string]interface{})
+	if !ok {
+		apiPeers = map[string]interface{}{}
+	}
+
+	if apiAddrMap, ok := apiPeers[leaderRaftAddr]; ok {
+		if _httpAddr, ok := apiAddrMap.(map[string]interface{}); ok {
+			if peerHttp, ok := _httpAddr["api_addr"]; ok {
+				rc.leader = peer(peerHttp.(string))
+			}
+		}
+	}
+
+	if rc.leader == "" {
+		// nodes/ API is available in 6.0+
+		trace("getting leader from metadata failed, trying nodes/")
+		responseBody, err := conn.rqliteApiGet(api_NODES)
+		if err != nil {
+			return errors.New("could not determine leader from API nodes call")
+		}
+		trace("%s: updateClusterInfo() back from api call OK", conn.ID)
+
+		nodes := make(map[string]struct {
+			APIAddr   string `json:"api_addr,omitempty"`
+			Addr      string `json:"addr,omitempty"`
+			Reachable bool   `json:"reachable,omitempty"`
+			Leader    bool   `json:"leader"`
+		})
+		err = json.Unmarshal(responseBody, &nodes)
+		if err != nil {
+			return errors.New("could not unmarshal nodes/ response")
+		}
+
+		for _, v := range nodes {
+			if !v.Reachable {
+				continue
+			}
+
+			u, err := url.Parse(v.APIAddr)
+			if err != nil {
+				return errors.New("could not parse API address")
+			}
+
+			if v.Leader {
+				rc.leader = peer(u.Host)
+			} else {
+				rc.otherPeers = append(rc.otherPeers, peer(u.Host))
+			}
+		}
+	} else {
+		trace("leader successfully determined using metadata")
+	}
+
+	rc.peerList = []peer{}
+
+	hostname, _ := os.Hostname()
+	split := strings.Split(hostname, "-")
+	n := split[len(split)-1]
+	rc.peerList = append(rc.peerList, peer(fmt.Sprintf("rqlite-%s.rqlite-svc.erp.svc.cluster.local:4001", n)))
+
+	for _, p := range rc.otherPeers {
+		rc.peerList = append(rc.peerList, p)
+	}
+
+	if rc.leader != "" {
+		rc.peerList = append(rc.peerList, rc.leader)
+	}
+
+	// dump to trace
+	trace("%s: here is my cluster config:", conn.ID)
+	trace("%s: leader   : %s", conn.ID, rc.leader)
+	for n, v := range rc.otherPeers {
+		trace("%s: otherPeer #%d: %s", conn.ID, n, v)
+	}
+
+	// now make it official
+	conn.cluster = rc
+
+	return nil
+}
+
+// GetLocalIpToInt 获取本机IP转成int
+func GetLocalIpToInt() (int, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return 0, err
+	}
+	for _, address := range addrs {
+		// 检查ip地址判断是否回环地址
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return ConvertToIntIP(ipnet.IP.String())
+			}
+		}
+	}
+	return 0, errors.New("can not find the client ip address")
+
+}
+
+func ConvertToIntIP(ip string) (int, error) {
+	ips := strings.Split(ip, ".")
+	E := errors.New("not A IP")
+	if len(ips) != 4 {
+		return 0, E
+	}
+	var intIP int
+	for k, v := range ips {
+		i, err := strconv.Atoi(v)
+		if err != nil || i > 255 {
+			return 0, E
+		}
+		intIP = intIP | i<<uint(8*(3-k))
+	}
+	return intIP, nil
 }

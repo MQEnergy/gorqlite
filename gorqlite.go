@@ -118,7 +118,7 @@ func Open(connURL string) (Connection, error) {
 	// call updateClusterInfo() to populate the cluster
 	// also tests the user's default
 
-	err = conn.updateClusterInfo()
+	err = conn.updateClusterInfo2()
 
 	// and the err from updateClusterInfo() will be our err as well
 	return conn, err
