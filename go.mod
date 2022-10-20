@@ -1,3 +1,3 @@
-module github.com/rqlite/gorqlite
+module github.com/MQEnergy/gorqlite
 
 go 1.17
