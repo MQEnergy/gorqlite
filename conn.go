@@ -331,9 +331,10 @@ func (conn *Connection) initConnection(url string) error {
 	ShufflePeers is randomly shuffling peers
 */
 
-func (conn *Connection) ShufflePeers() {
+func (conn *Connection) ShufflePeers() []peer {
 	peerList := conn.cluster.peerList
 	rand.Seed(time.Now().UnixNano())
 	rand.Shuffle(len(peerList), func(i, j int) { peerList[i], peerList[j] = peerList[j], peerList[i] })
 	conn.cluster.peerList = peerList
+	return peerList
 }
