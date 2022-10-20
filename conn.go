@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -319,4 +320,20 @@ func (conn *Connection) initConnection(url string) error {
 	conn.cluster.conn = conn
 
 	return nil
+}
+
+/* *****************************************************************
+
+   method: Connection.ShufflePeers()
+
+ * *****************************************************************/
+/*
+	ShufflePeers is randomly shuffling peers
+*/
+
+func (conn *Connection) ShufflePeers() {
+	peerList := conn.cluster.peerList
+	rand.Seed(time.Now().UnixNano())
+	rand.Shuffle(len(peerList), func(i, j int) { peerList[i], peerList[j] = peerList[j], peerList[i] })
+	conn.cluster.peerList = peerList
 }
